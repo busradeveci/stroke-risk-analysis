@@ -1,0 +1,343 @@
+---
+title: "Analysis of Stroke Risk Factors Using Healthcare Data"
+output: html_document
+date: "`r Sys.Date()`"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Veri Yükleme ve İnceleme
+```{r load-data}
+stroke <- read.csv("data/healthcare-dataset-stroke-data.csv")
+head(stroke)
+names(stroke)
+str(stroke)
+summary(stroke)
+```
+
+## Veri Temizleme
+```{r clean-bmi}
+# BMI eksiklerini NA yapıyoruz
+stroke$bmi[stroke$bmi == "N/A"] <- NA
+stroke$bmi <- as.numeric(stroke$bmi)
+
+# Temizleme: BMI 15-60 aralığında olanlar
+stroke_clean <- stroke[!is.na(stroke$bmi) & stroke$bmi >= 15 & stroke$bmi <= 60,]
+```
+
+## BMI Dağılımı
+```{r bmi-histogram}
+hist(stroke_clean$bmi, main = "BMI Dağılımı", xlab = "BMI", col = "lightblue")
+summary(stroke_clean$bmi)
+```
+
+## Veri Kaydetme
+```{r save-data, eval=FALSE}
+saveRDS(stroke_clean, "stroke_clean.rds")
+write.csv(stroke_clean, "stroke_clean.csv", row.names = FALSE)
+```
+
+## Gruplar Oluşturma
+```{r create-groups, message=FALSE}
+library(dplyr)
+
+# BMI grupları
+stroke_clean$bmi_group <- cut(
+  stroke_clean$bmi,
+  breaks = c(15, 24.9, 29.9, 60),
+  labels = c("Normal", "Ortalama", "Obez"),
+  right = TRUE
+)
+
+# Yaş grupları
+stroke_clean$age_group <- cut(
+  stroke_clean$age,
+  breaks = c(0, 39, 59, 79, 120),
+  labels = c("0-39", "40-59", "60-79", "80+"),
+  right = TRUE
+)
+```
+
+## BMI'ye Göre İnme Oranları
+```{r bmi-summary}
+bmi_summary <- stroke_clean %>%
+  group_by(bmi_group) %>%
+  summarise(
+    total = n(),
+    stroke_count = sum(stroke),
+    stroke_percent = round((stroke_count / total) * 100, 2)
+  )
+
+knitr::kable(bmi_summary, caption = "BMI Gruplarına Göre İnme Oranları")
+```
+
+## Yaşa Göre İnme Oranları
+```{r age-summary}
+age_summary <- stroke_clean %>%
+  group_by(age_group) %>%
+  summarise(
+    total = n(),
+    stroke_count = sum(stroke),
+    stroke_percent = round((stroke_count / total) * 100, 2)
+  )
+
+knitr::kable(age_summary, caption = "Yaş Gruplarına Göre İnme Oranları")
+```
+
+## Hipertansiyona Göre İnme Oranları
+```{r hypertension-summary}
+hypertension_summary <- stroke_clean %>%
+  group_by(hypertension) %>%
+  summarise(
+    total = n(),
+    stroke_count = sum(stroke),
+    stroke_percent = round((stroke_count / total) * 100, 2)
+  )
+
+knitr::kable(hypertension_summary, caption = "Hipertansiyona Göre İnme Oranları")
+```
+
+## BMI ve Hipertansiyon Kombinasyonu
+```{r bmi-ht-summary}
+bmi_ht_summary <- stroke_clean %>%
+  group_by(bmi_group, hypertension) %>%
+  summarise(
+    total = n(),
+    stroke_count = sum(stroke),
+    stroke_percent = round((stroke_count / total) * 100, 2),
+    .groups = "drop"
+  )
+
+knitr::kable(bmi_ht_summary, caption = "BMI ve Hipertansiyona Göre İnme Oranları")
+```
+
+## Lojistik Regresyon Modeli
+```{r logistic-model}
+model <- glm(
+  stroke ~ age + hypertension + heart_disease + bmi,
+  data = stroke_clean,
+  family = binomial
+)
+
+summary(model)
+```
+
+## Train-Test Ayrımı
+```{r train-test-split}
+set.seed(42)
+n <- nrow(stroke_clean)
+train_index <- sample(seq_len(n), size = 0.7 * n)
+
+train_data <- stroke_clean[train_index, ]
+test_data  <- stroke_clean[-train_index, ]
+
+cat("Train boyutu:", nrow(train_data), "\n")
+cat("Test boyutu:", nrow(test_data), "\n")
+```
+
+## Model Eğitimi ve Tahminler
+```{r ml-model}
+model_ml <- glm(
+  stroke ~ age + hypertension + heart_disease + bmi,
+  data = train_data,
+  family = binomial
+)
+
+# Test tahminleri
+test_probs <- predict(model_ml, newdata = test_data, type = "response")
+test_pred <- ifelse(test_probs >= 0.5, 1, 0)
+
+knitr::kable(table(Gercek = test_data$stroke, Tahmin = test_pred),
+             caption = "Confusion Matrix (Eşik = 0.5)")
+```
+
+## Farklı Eşik Değerleri
+```{r different-thresholds}
+test_pred_03 <- ifelse(test_probs >= 0.3, 1, 0)
+knitr::kable(table(Gercek = test_data$stroke, Tahmin = test_pred_03),
+             caption = "Confusion Matrix (Eşik = 0.3)")
+
+test_pred_02 <- ifelse(test_probs >= 0.2, 1, 0)
+knitr::kable(table(Gercek = test_data$stroke, Tahmin = test_pred_02),
+             caption = "Confusion Matrix (Eşik = 0.2)")
+```
+
+## Ağırlıklı Model
+```{r weighted-model}
+model_weighted <- glm(
+  stroke ~ age + hypertension + heart_disease,
+  data = train_data,
+  family = binomial,
+  weights = ifelse(train_data$stroke == 1, 10, 1)
+)
+
+summary(model_weighted)
+
+test_probs_w <- predict(model_weighted, newdata = test_data, type = "response")
+test_pred_w_03 <- ifelse(test_probs_w >= 0.3, 1, 0)
+
+knitr::kable(table(Gercek = test_data$stroke, Tahmin = test_pred_w_03),
+             caption = "Ağırlıklı Model - Confusion Matrix (Eşik = 0.3)")
+```
+
+## ROC Eğrisi ve AUC
+```{r roc-curve, message=FALSE, warning=FALSE}
+library(pROC)
+
+roc_obj <- roc(response = test_data$stroke, predictor = test_probs_w)
+
+cat("AUC:", round(auc(roc_obj), 3), "\n")
+
+plot(roc_obj, col = "purple", lwd = 3, main = "ROC Curve – Weighted Logistic Regression")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+text(0.6, 0.2, labels = paste("AUC =", round(auc(roc_obj), 3)), cex = 1.2)
+```
+
+
+## Görselleştirmeler
+```{r theme-setup, echo=FALSE}
+library(ggplot2)
+
+# Genel tema
+tema <- theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 11, color = "gray30"),
+    axis.title = element_text(face = "bold", size = 11),
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+```
+
+### BMI Dağılımı ve İnme Durumu
+```{r viz-bmi, fig.width=10, fig.height=6}
+ggplot(stroke_clean, aes(x = bmi, fill = as.factor(stroke))) +
+  geom_histogram(bins = 35, alpha = 0.8, position = "identity") +
+  scale_fill_manual(
+    values = c("0" = "#3498db", "1" = "#e74c3c"),
+    labels = c("İnme Yok", "İnme Var"),
+    name = "Durum"
+  ) +
+  labs(
+    title = "BMI Dağılımı ve İnme Durumu",
+    x = "BMI",
+    y = "Hasta Sayısı"
+  ) +
+  tema
+```
+
+### Yaş ve İnme İlişkisi
+```{r viz-age, fig.width=10, fig.height=6}
+ggplot(stroke_clean, aes(x = age, y = stroke)) +
+  geom_point(alpha = 0.15, color = "#3498db", size = 2) +
+  geom_smooth(
+    method = "glm",
+    method.args = list(family = "binomial"),
+    color = "#e74c3c",
+    fill = "#e74c3c",
+    alpha = 0.2,
+    linewidth = 1.5
+  ) +
+  labs(
+    title = "Yaş ve İnme Riski İlişkisi",
+    x = "Yaş",
+    y = "İnme Olasılığı"
+  ) +
+  tema
+```
+
+### Yaş Gruplarına Göre İnme Oranları
+```{r viz-age-groups, fig.width=10, fig.height=6}
+age_plot_data <- stroke_clean %>%
+  group_by(age_group) %>%
+  summarise(stroke_rate = mean(stroke) * 100, n = n())
+
+ggplot(age_plot_data, aes(x = age_group, y = stroke_rate, fill = stroke_rate)) +
+  geom_col(width = 0.7, color = "white", linewidth = 1) +
+  geom_text(
+    aes(label = paste0(round(stroke_rate, 1), "%\n(n=", n, ")")),
+    vjust = -0.5, fontface = "bold", size = 4
+  ) +
+  scale_fill_gradient(low = "#3498db", high = "#e74c3c", name = "İnme Oranı (%)") +
+  labs(
+    title = "Yaş Gruplarına Göre İnme Oranları",
+    x = "Yaş Grubu",
+    y = "İnme Oranı (%)"
+  ) +
+  tema +
+  ylim(0, max(age_plot_data$stroke_rate) * 1.15)
+```
+
+### BMI Gruplarına Göre İnme Oranları
+```{r viz-bmi-groups, fig.width=10, fig.height=6}
+bmi_plot_data <- stroke_clean %>%
+  group_by(bmi_group) %>%
+  summarise(stroke_rate = mean(stroke) * 100, n = n())
+
+ggplot(bmi_plot_data, aes(x = bmi_group, y = stroke_rate, fill = bmi_group)) +
+  geom_col(width = 0.7, color = "white", linewidth = 1) +
+  geom_text(
+    aes(label = paste0(round(stroke_rate, 1), "%\n(n=", n, ")")),
+    vjust = -0.5, fontface = "bold", size = 4
+  ) +
+  scale_fill_manual(values = c("#2ecc71", "#f39c12", "#e74c3c")) +
+  labs(
+    title = "BMI Kategorilerine Göre İnme Oranları",
+    x = "BMI Kategorisi",
+    y = "İnme Oranı (%)"
+  ) +
+  tema +
+  theme(legend.position = "none") +
+  ylim(0, max(bmi_plot_data$stroke_rate) * 1.15)
+```
+
+### Risk Faktörleri Karşılaştırması
+```{r viz-risk-comparison, fig.width=10, fig.height=6}
+risk_comparison <- data.frame(
+  factor = c("Hipertansiyon", "Kalp Hastalığı", "Obezite", "Yaşlılık (60+)"),
+  stroke_rate = c(
+    mean(stroke_clean$stroke[stroke_clean$hypertension == 1]) * 100,
+    mean(stroke_clean$stroke[stroke_clean$heart_disease == 1]) * 100,
+    mean(stroke_clean$stroke[stroke_clean$bmi_group == "Obez"]) * 100,
+    mean(stroke_clean$stroke[stroke_clean$age >= 60]) * 100
+  )
+) %>% arrange(desc(stroke_rate))
+
+ggplot(risk_comparison, aes(x = reorder(factor, stroke_rate), y = stroke_rate, fill = factor)) +
+  geom_col(width = 0.7, color = "white", linewidth = 1) +
+  geom_text(
+    aes(label = paste0(round(stroke_rate, 1), "%")),
+    hjust = -0.2, fontface = "bold", size = 5
+  ) +
+  scale_fill_brewer(palette = "Set1") +
+  coord_flip() +
+  labs(
+    title = "Risk Faktörlerine Göre İnme Oranları",
+    x = "",
+    y = "İnme Oranı (%)"
+  ) +
+  tema +
+  theme(legend.position = "none")
+```
+
+## Sonuç ve Öneriler
+
+### Temel Bulgular
+
+1. **Yaş**: En önemli risk faktörü - 60 yaş üzerinde risk dramatik artıyor
+2. **Hipertansiyon**: Riski yaklaşık 2.5 kat artırıyor
+3. **BMI**: Obez bireylerde risk belirgin şekilde yüksek
+4. **Model Performansı**: AUC = `r round(auc(roc_obj), 3)` (iyi performans)
+
+### Klinik Öneriler
+
+- 60+ yaş grubunda düzenli tarama yapılmalı
+- Hipertansiyon kontrolü kritik önem taşıyor
+- Kilo yönetimi koruyucu etkiye sahip olabilir
+
+### Kısıtlamalar
+
+- Veri seti dengesiz (inme vakası %5)
+- Bazı değişkenler eksik (sigara, fiziksel aktivite)
+- Kesitsel veri - nedensellik kurulamaz
